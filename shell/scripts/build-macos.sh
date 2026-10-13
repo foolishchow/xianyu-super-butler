@@ -87,14 +87,17 @@ if [ -n "$RUNTIME_SRC" ]; then
 	fi
 fi
 
-if [ -n "$ICON_SRC" ]; then
-	if [ -f "$ICON_ABS" ]; then
-		cp "$ICON_ABS" "$RES_DIR/AppIcon.icns"
-	else
-		echo "    警告: 找不到图标 $ICON_SRC，跳过"
+if [ -z "$ICON_SRC" ]; then
+	echo "    未提供图标，尝试从 static/favicon.svg 自动生成..."
+	if bash "$SHELL_DIR/scripts/make-icon.sh" >/dev/null 2>&1; then
+		ICON_ABS="$SHELL_DIR/out/AppIcon.icns"
 	fi
+fi
+if [ -n "${ICON_ABS:-}" ] && [ -f "$ICON_ABS" ]; then
+	cp "$ICON_ABS" "$RES_DIR/AppIcon.icns"
+	echo "    已放入 AppIcon.icns ($(du -h "$RES_DIR/AppIcon.icns" | awk '{print $1}'))"
 else
-	echo "    (未提供图标，Finder 会显示通用图标)"
+	echo "    (无图标，Finder 会显示通用图标；用 scripts/make-icon.sh 生成)"
 fi
 
 echo "==> 5/5 代码签名（ad-hoc）"

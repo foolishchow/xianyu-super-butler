@@ -113,6 +113,23 @@ bash shell/scripts/build-macos.sh runtime/ icon.icns  # 壳 + 后端 + 图标
 包内自带 venv 时，Python 路径是 `Contents/Resources/runtime/bin/python`，
 壳的 `pythonBin()` 会优先找到它，不依赖用户系统 Python。
 
+#### 应用图标
+
+```bash
+bash shell/scripts/make-icon.sh                     # 默认用 static/favicon.svg
+bash shell/scripts/make-icon.sh path/to/logo.svg
+```
+
+管线：`qlmanage` 把 SVG 渲成 1024×1024 PNG → `sips` 缩出标准 10 档 →
+`iconutil` 合成 icns。产物在 `shell/out/AppIcon.icns`，`build-macos.sh` 没收到
+图标参数时会自己调这个脚本。
+
+⚠️ **iconset 目录名必须以 `.iconset` 结尾**，否则 `iconutil` 报
+`Invalid Iconset.`。这个报错信息完全没提目录名，排查了很久。对照实验：
+同一批逐字节相同的 PNG，目录名 `iconset` 失败、`a.iconset` 成功。
+`icon_64x64.png` 这类非标准条目名也不要放进来。三个工具都是 macOS 自带的，
+不用额外安装。
+
 #### 链接警告（已知，无法消除）
 
 `go build` 会报 17 条：
@@ -217,9 +234,10 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
 
 实测过程中遇到的坑：
 
-- **`iconutil` 在本环境无法生成 icns**——连单张合法 PNG 的 iconset 都报
-  `Invalid Iconset`，`sips -s format icns` 也直接失败。疑似沙箱限制而非真实
-  macOS 行为，换一台干净机器复验过后再把图标生成写进脚本。
+- **`iconutil` 的 `Invalid Iconset.` 报错是假象**。真因是 iconset 目录名必须
+  以 `.iconset` 结尾，报错信息本身完全没提目录名。当时误判为沙箱限制，
+  后来用逐字节相同的 PNG 做目录名对照实验才定位到。已写入
+  `scripts/make-icon.sh`，图标管线现在可用。
 - **链接警告无法消除**。设 `MACOSX_DEPLOYMENT_TARGET=15.0` 和
   `CGO_CFLAGS=-mmacosx-version-min=15.0` 都无效，`LC_BUILD_VERSION.minos`
   仍是 11.0。原因见上方"链接警告"一节。
