@@ -9,7 +9,9 @@
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-SVG="${1:-$REPO_DIR/static/favicon.svg}"
+# 默认用 static/icon.svg（专为 macOS Dock 设计：含 10% 安全边距 + 真 CJK 字体）。
+# static/favicon.svg 保留给 web 用（满铺，浏览器标签页里看得清）。
+SVG="${1:-$REPO_DIR/static/icon.svg}"
 OUT_DIR="$REPO_DIR/shell/out"
 OUT_ICNS="$OUT_DIR/AppIcon.icns"
 
@@ -17,14 +19,12 @@ command -v sips >/dev/null || { echo "需要 sips（macOS 自带）"; exit 1; }
 command -v iconutil >/dev/null || { echo "需要 iconutil（macOS 自带）"; exit 1; }
 [ -f "$SVG" ] || { echo "找不到 SVG: $SVG"; exit 1; }
 
+# 安全边距已经写进 icon.svg 的 viewBox 里（内容 100x100 在 125x125 画布中，
+# 留白 10%），所以这里不再额外 padding。
+# 圆角半径：rx=20 在 125 画布里 = 0.16，用于 qlmanage 回退路径清角。
 CANVAS=1024
-MARGIN=0.10
-# 内容边长 = 画布 * (1 - 2*留白) = 1024 * 0.80。
-# 留白取 10% 的依据：实测 Safari AppIcon，256px 档内容占 80.5%、左边距 9.8%。
-# macOS 桌面图标不满铺，四周要有透明安全边距。
-CONTENT=819
-# 圆角半径占内容边长的比例，对应 static/favicon.svg 的 viewBox 100x100 + rx="20"
-RADIUS_FRAC=0.20
+MARGIN=0.0
+RADIUS_FRAC=0.16
 
 WORK="$(mktemp -d /tmp/mkicon.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -39,10 +39,10 @@ mkdir -p "$OUT_DIR"
 RAW="$WORK/raw.png"
 if command -v rsvg-convert >/dev/null 2>&1; then
 	echo "    渲染: rsvg-convert"
-	rsvg-convert -w "$CONTENT" -h "$CONTENT" "$SVG" -o "$RAW" >/dev/null
+	rsvg-convert -w "$CANVAS" -h "$CANVAS" "$SVG" -o "$RAW" >/dev/null
 elif command -v qlmanage >/dev/null 2>&1; then
 	echo "    渲染: qlmanage"
-	qlmanage -t -s "$CONTENT" -o "$WORK" "$SVG" >/dev/null 2>&1
+	qlmanage -t -s "$CANVAS" -o "$WORK" "$SVG" >/dev/null 2>&1
 	RAW="$WORK/$(basename "$SVG").png"
 	[ -f "$RAW" ] || { echo "qlmanage 转换失败: $SVG"; exit 1; }
 else
