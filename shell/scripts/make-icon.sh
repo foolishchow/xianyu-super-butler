@@ -13,20 +13,40 @@ SVG="${1:-$REPO_DIR/static/favicon.svg}"
 OUT_DIR="$REPO_DIR/shell/out"
 OUT_ICNS="$OUT_DIR/AppIcon.icns"
 
-command -v qlmanage >/dev/null || { echo "需要 qlmanage（macOS 自带）"; exit 1; }
-command -v iconutil  >/dev/null || { echo "需要 iconutil（macOS 自带）";  exit 1; }
+command -v sips >/dev/null || { echo "需要 sips（macOS 自带）"; exit 1; }
+command -v iconutil >/dev/null || { echo "需要 iconutil（macOS 自带）"; exit 1; }
 [ -f "$SVG" ] || { echo "找不到 SVG: $SVG"; exit 1; }
+
+SIZE=1024
+# 圆角半径占边长的比例，对应 static/favicon.svg 的 viewBox 100x100 + rx="20"
+RADIUS_FRAC=0.20
 
 WORK="$(mktemp -d /tmp/mkicon.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$OUT_DIR"
 
-# 1. SVG -> 1024x1024 PNG
-#    qlmanage 会输出 <文件名>.png，即 favicon.svg.png
-qlmanage -t -s 1024 -o "$WORK" "$SVG" >/dev/null 2>&1
-BASENAME="$(basename "$SVG").png"
-[ -f "$WORK/$BASENAME" ] || { echo "qlmanage 转换失败: $SVG"; exit 1; }
+# 1. SVG -> PNG
+#
+#    优先 rsvg-convert：它渲染透明背景是正确的。
+#    退回 qlmanage：Quick Look 会先把整块画布涂白再画图形，圆角缺口露白，
+#    在深色 Dock 里是一条刺眼的白边，必须用 cornerfix.py 把四角清成透明。
+BASE="$WORK/base.png"
+if command -v rsvg-convert >/dev/null 2>&1; then
+	echo "    渲染: rsvg-convert"
+	rsvg-convert -w "$SIZE" -h "$SIZE" "$SVG" -o "$BASE" >/dev/null
+elif command -v qlmanage >/dev/null 2>&1; then
+	echo "    渲染: qlmanage + 清角"
+	qlmanage -t -s "$SIZE" -o "$WORK" "$SVG" >/dev/null 2>&1
+	RAW="$WORK/$(basename "$SVG").png"
+	[ -f "$RAW" ] || { echo "qlmanage 转换失败: $SVG"; exit 1; }
+	"$REPO_DIR/shell/runtime/bin/python" "$REPO_DIR/shell/scripts/cornerfix.py" \
+		"$RAW" "$BASE" "$RADIUS_FRAC" 2>/dev/null \
+		|| python3 "$REPO_DIR/shell/scripts/cornerfix.py" "$RAW" "$BASE" "$RADIUS_FRAC"
+else
+	echo "找不到 rsvg-convert 或 qlmanage"; exit 1
+fi
+[ -f "$BASE" ] || { echo "PNG 渲染失败"; exit 1; }
 
 # 2. 生成标准 10 档 iconset
 #
@@ -47,7 +67,7 @@ for pair in \
   "512:icon_512x512.png" \
   "1024:icon_512x512@2x.png"
 do
-  sips -z "${pair%%:*}" "${pair%%:*}" "$WORK/$BASENAME" \
+  sips -z "${pair%%:*}" "${pair%%:*}" "$BASE" \
     --out "$ICONSET/${pair##*:}" >/dev/null
 done
 
