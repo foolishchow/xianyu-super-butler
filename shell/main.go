@@ -114,6 +114,33 @@ func main() {
 	}
 }
 
+// runtimeCandidates 按优先级列出后端目录的可能位置。
+//
+// macOS .app 里二进制在 Contents/MacOS/，runtime 放 Contents/Resources/ 才符合
+// 打包惯例；开发期的裸二进制则和 exe 同级。Windows/Linux 只有同级一种。
+func runtimeCandidates(exeDir string) []string {
+	return []string{
+		filepath.Join(exeDir, "runtime"),
+		filepath.Join(exeDir, "..", "Resources", "runtime"),
+	}
+}
+
+// findRuntimeDir 返回第一个真的存在 Start.py 的候选目录。
+func findRuntimeDir(exeDir string) (string, error) {
+	candidates := runtimeCandidates(exeDir)
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "Start.py")); err == nil {
+			if abs, err := filepath.Abs(dir); err == nil {
+				return abs, nil
+			}
+			return dir, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"找不到后端入口：以下候选目录都没有 Start.py\n  %s\n\n请把仓库的 Python 部分（含 Start.py 和 global_config.yml）放到 runtime/ 目录",
+		strings.Join(candidates, "\n  "))
+}
+
 // resolveEnv 校验目录结构、分配端口、确定数据目录。
 // 返回非 nil 错误时说明产物布局有问题，此时不应尝试启动后端。
 func resolveEnv() (*env, error) {
@@ -121,14 +148,9 @@ func resolveEnv() (*env, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无法定位可执行文件: %w", err)
 	}
-	exeDir := filepath.Dir(exe)
-
-	runtimeDir := filepath.Join(exeDir, "runtime")
-	entry := filepath.Join(runtimeDir, "Start.py")
-	if _, err := os.Stat(entry); err != nil {
-		return nil, fmt.Errorf(
-			"找不到后端入口 %s\n\n请把仓库的 Python 部分解压到可执行文件同级的 runtime/ 目录（需要包含 Start.py 和 global_config.yml）",
-			entry)
+	runtimeDir, err := findRuntimeDir(filepath.Dir(exe))
+	if err != nil {
+		return nil, err
 	}
 	if _, err := os.Stat(filepath.Join(runtimeDir, "global_config.yml")); err != nil {
 		return nil, fmt.Errorf(
@@ -169,6 +191,11 @@ func userBaseDir() string {
 
 // freePort 向系统要一个空闲端口。占用与释放之间存在极小的竞态窗口，
 // 若真的被抢走，后端会启动失败并写入日志，用户可据此排查。
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
 func freePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -202,6 +229,14 @@ func startBackend(st *startState, logger *slog.Logger) {
 		fmt.Sprintf("DB_PATH=%s", filepath.Join(e.dataDir, "xianyu_data.db")),
 		"PYTHONUNBUFFERED=1",
 	)
+
+	// 把 Playwright 浏览器一并打包时指给它，避免首次启动联网下载 Chromium。
+	// 上游 Start.py 已经认识 PLAYWRIGHT_BROWSERS_PATH 这个环境变量，后端零改动。
+	if pw := filepath.Join(e.runtimeDir, "playwright"); isDir(pw) {
+		cmd.Env = append(cmd.Env, "PLAYWRIGHT_BROWSERS_PATH="+pw)
+		logger.Info("使用内置 Playwright 浏览器", "path", pw)
+	}
+
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 
 	if err := cmd.Start(); err != nil {

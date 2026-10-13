@@ -98,9 +98,36 @@ GOOS=linux GOARCH=amd64 go build -o out/shell .
 需要 CGO（Wails 依赖平台 WebKit/WebView2 原生库）。
 Windows 目标机需要预装 WebView2 Runtime（Win10 1803+ 通常自带）。
 
-`go build` 在 macOS 上会有 `object file was built for newer 'macOS' version` 的链接
-警告，是 Wails beta.28 自己编译产物按 macOS 15 目标构建导致的，不影响运行。
-介意可以加 `-ldflags` 或设 `MACOSX_DEPLOYMENT_TARGET=15.0`。
+### macOS 打 .app 包
+
+```bash
+bash shell/scripts/build-macos.sh                     # 只打壳
+bash shell/scripts/build-macos.sh runtime/            # 壳 + 后端
+bash shell/scripts/build-macos.sh runtime/ icon.icns  # 壳 + 后端 + 图标
+```
+
+产物在 `shell/out/闲鱼智控.app`，后端放进 `Contents/Resources/runtime/`。
+壳会按顺序探测 `<exe>/runtime` 和 `<exe>/../Resources/runtime`，所以裸二进制和
+.app 包两种布局都能跑。
+
+包内自带 venv 时，Python 路径是 `Contents/Resources/runtime/bin/python`，
+壳的 `pythonBin()` 会优先找到它，不依赖用户系统 Python。
+
+#### 链接警告（已知，无法消除）
+
+`go build` 会报 17 条：
+
+```
+ld: warning: object file was built for newer 'macOS' version (15.0) than being linked (11.0)
+```
+
+原因是 Wails beta.28 自己编译的 CGO 对象按 macOS 15 目标构建。设了
+`MACOSX_DEPLOYMENT_TARGET=15.0` 和 `CGO_CFLAGS=-mmacosx-version-min=15.0`
+都无效——Go 把 darwin 的 `LC_BUILD_VERSION.minos` 写死为 11.0，改不动。
+
+实际后果：二进制声明 `minos 11.0`，但部分依赖符号可能真的需要 15.0。
+所以 Info.plist 里按 `LSMinimumSystemVersion = 15.0` 声明，和 Wails 的实际
+要求对齐。要彻底消除只能等 Wails 正式版或 patch 掉它的 CGO 对象。
 
 ## 分发
 
@@ -119,6 +146,24 @@ Windows 目标机需要预装 WebView2 Runtime（Win10 1803+ 通常自带）。
 
 `runtime/` 不在版本库里（见 `.gitignore`），是分装时拼出来的。
 
+### Playwright 浏览器：要么打包，要么忍受首启联网下载
+
+后端启动时会检查 Playwright 浏览器，缺了就自动下载（`Start.py:147` 的
+`_check_and_install_playwright()`），默认走 `cdn.npmmirror.com` 镜像。这意味着：
+
+- **不打包** → 首次启动要联网下 Chromium，离线环境直接不可用
+- **打包** → 放进 `runtime/playwright/chromium-*/`，壳会自动设置
+  `PLAYWRIGHT_BROWSERS_PATH` 指过去（后端零改动，上游 `Start.py` 本来就认这个变量）
+
+推荐打包。注意上游对 PyInstaller 场景的约定是 `<exe>/playwright` 且仅当
+`sys.frozen` 为真时生效；我们用 venv 不是 frozen，所以走环境变量这条路。
+
+下载命令：
+
+```bash
+PLAYWRIGHT_BROWSERS_PATH=runtime/playwright playwright install chromium
+```
+
 ## 冒烟测试
 
 不启动真实闲鱼链路，用 stub 后端验证最关键的跨 origin 导航：
@@ -134,8 +179,8 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
 
 ## 已知限制
 
-1. **Windows / Linux 未验证**。macOS 已跑通。跨 origin 导航在 WebKitGTK 上限制较严，
-   Linux 是下一个必测项。
+1. **Windows / Linux 未验证**。跨 origin 导航在 WebKitGTK 上限制较严，Linux 是下一个
+   必测项。macOS 已全链路实机验证，见下节。
 2. **端口分配有竞态窗口**。`freePort()` 占用后立刻释放，理论上可能被别的进程抢走。
    真被抢了后端会启动失败并写进 `backend.log`，用户可据此排查。
 3. **Playwright 子进程清理依赖进程组**（Unix `Setpgid` / Windows `taskkill /T`）。
@@ -147,3 +192,34 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
    读不到配置，预检会拦下来。
 6. **WebView 自己的缓存目录**（登录态、localStorage）落在 WebKit 的用户数据目录，
    没有归拢到本壳的数据目录。要卸载不留残留的话得额外处理。
+7. **ad-hoc 签名，没过 Notarization**。`codesign --sign -` 只够自己机器跑，
+   发给别人会被 Gatekeeper 拦（"无法验证开发者"）。要公开发布得走 Developer ID
+   + 公证，那需要 Apple 付费账户。
+
+## macOS 实测结果（已验证）
+
+环境：macOS 15.8.1 Sequoia / arm64 / Go 1.25.12 / Wails v3.0.0-beta.28
+
+以下均在真实 `.app` 包（457M，含内嵌 venv）里验证通过：
+
+| 项 | 结果 |
+| --- | --- |
+| 跨 origin 导航 | ✅ 加载页 → `http://127.0.0.1:<随机端口>` 成功跳转 |
+| bundle 布局 | ✅ 二进制在 `Contents/MacOS/`，壳从 `../Resources/runtime` 找到后端 |
+| 内嵌 venv | ✅ 用 `Contents/Resources/runtime/bin/python` 启动，不依赖系统 Python |
+| 端口注入 | ✅ `API_PORT` 生效，后端只监听 `127.0.0.1` |
+| 工作目录 | ✅ `cmd.Dir` 指向 runtime，`global_config.yml` 读得到 |
+| 真实后端 | ✅ SPA / JS / CSS / `/system-settings/public` / SQLite 全部 200 |
+| 数据目录 | ✅ `~/Library/Application Support/xianyu-super-butler/`（logs / backups / static/uploads） |
+| 进程清理 | ✅ 退出时 Python 进程树被收走 |
+| 预检失败 | ✅ 缺 `runtime/` 时显示中文错误页，不静默退出 |
+| ad-hoc 签名 | ✅ `codesign --sign -` 成功 |
+
+实测过程中遇到的坑：
+
+- **`iconutil` 在本环境无法生成 icns**——连单张合法 PNG 的 iconset 都报
+  `Invalid Iconset`，`sips -s format icns` 也直接失败。疑似沙箱限制而非真实
+  macOS 行为，换一台干净机器复验过后再把图标生成写进脚本。
+- **链接警告无法消除**。设 `MACOSX_DEPLOYMENT_TARGET=15.0` 和
+  `CGO_CFLAGS=-mmacosx-version-min=15.0` 都无效，`LC_BUILD_VERSION.minos`
+  仍是 11.0。原因见上方"链接警告"一节。
