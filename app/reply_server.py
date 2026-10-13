@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Bod
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
@@ -361,6 +362,16 @@ app = FastAPI(
     description="闲鱼自动回复系统API",
     docs_url="/docs",
     redoc_url="/redoc"
+)
+
+# 桌面壳（shell/）的启动加载页跑在 Wails 内置的 wails:// origin 上，需要跨 origin
+# 轮询本机的 /health 才能显示真实启动进度。后端永远只绑 127.0.0.1，所以这里只放开
+# 本机回环地址、不对外开放。allow_origins 是精确匹配、不支持端口通配符，得用 regex。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https?://(127\.0\.0\.1|localhost)(:\d+)?",
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # 注册刮刮乐远程控制路由

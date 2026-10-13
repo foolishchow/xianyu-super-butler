@@ -1,0 +1,24 @@
+# 构建产物
+/shell
+/shell.exe
+*.app/
+*.exe
+*.dmg
+*.zip
+out/
+build/
+
+# runtime/ 是分发时拼装的 Python 后端副本，不进版本库
+runtime/
+
+# 冒烟测试的临时产物
+test/out.txt
+test/shot.png
+test/runtime/
+
+# Go 工具产物
+vendor/
+
+# 系统杂项
+.DS_Store
+*.log
