@@ -17,8 +17,13 @@ command -v sips >/dev/null || { echo "需要 sips（macOS 自带）"; exit 1; }
 command -v iconutil >/dev/null || { echo "需要 iconutil（macOS 自带）"; exit 1; }
 [ -f "$SVG" ] || { echo "找不到 SVG: $SVG"; exit 1; }
 
-SIZE=1024
-# 圆角半径占边长的比例，对应 static/favicon.svg 的 viewBox 100x100 + rx="20"
+CANVAS=1024
+MARGIN=0.10
+# 内容边长 = 画布 * (1 - 2*留白) = 1024 * 0.80。
+# 留白取 10% 的依据：实测 Safari AppIcon，256px 档内容占 80.5%、左边距 9.8%。
+# macOS 桌面图标不满铺，四周要有透明安全边距。
+CONTENT=819
+# 圆角半径占内容边长的比例，对应 static/favicon.svg 的 viewBox 100x100 + rx="20"
 RADIUS_FRAC=0.20
 
 WORK="$(mktemp -d /tmp/mkicon.XXXXXX)"
@@ -26,27 +31,34 @@ trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$OUT_DIR"
 
-# 1. SVG -> PNG
+# 1. SVG -> 内容尺寸的 PNG（满铺，不含安全边距）
 #
 #    优先 rsvg-convert：它渲染透明背景是正确的。
 #    退回 qlmanage：Quick Look 会先把整块画布涂白再画图形，圆角缺口露白，
-#    在深色 Dock 里是一条刺眼的白边，必须用 cornerfix.py 把四角清成透明。
-BASE="$WORK/base.png"
+#    在深色 Dock 里是一条刺眼的白边，必须用 iconfix.py 把四角清成透明。
+RAW="$WORK/raw.png"
 if command -v rsvg-convert >/dev/null 2>&1; then
 	echo "    渲染: rsvg-convert"
-	rsvg-convert -w "$SIZE" -h "$SIZE" "$SVG" -o "$BASE" >/dev/null
+	rsvg-convert -w "$CONTENT" -h "$CONTENT" "$SVG" -o "$RAW" >/dev/null
 elif command -v qlmanage >/dev/null 2>&1; then
-	echo "    渲染: qlmanage + 清角"
-	qlmanage -t -s "$SIZE" -o "$WORK" "$SVG" >/dev/null 2>&1
+	echo "    渲染: qlmanage"
+	qlmanage -t -s "$CONTENT" -o "$WORK" "$SVG" >/dev/null 2>&1
 	RAW="$WORK/$(basename "$SVG").png"
 	[ -f "$RAW" ] || { echo "qlmanage 转换失败: $SVG"; exit 1; }
-	"$REPO_DIR/shell/runtime/bin/python" "$REPO_DIR/shell/scripts/cornerfix.py" \
-		"$RAW" "$BASE" "$RADIUS_FRAC" 2>/dev/null \
-		|| python3 "$REPO_DIR/shell/scripts/cornerfix.py" "$RAW" "$BASE" "$RADIUS_FRAC"
 else
 	echo "找不到 rsvg-convert 或 qlmanage"; exit 1
 fi
-[ -f "$BASE" ] || { echo "PNG 渲染失败"; exit 1; }
+[ -f "$RAW" ] || { echo "PNG 渲染失败"; exit 1; }
+
+# 2. 清角 + 垫安全边距 -> 最终 1024x1024 底图
+BASE="$WORK/base.png"
+if "$REPO_DIR/shell/runtime/bin/python" "$REPO_DIR/shell/scripts/iconfix.py" \
+	"$RAW" "$BASE" --canvas "$CANVAS" --margin "$MARGIN" --radius "$RADIUS_FRAC" \
+	2>/dev/null; then :
+else
+	python3 "$REPO_DIR/shell/scripts/iconfix.py" \
+		"$RAW" "$BASE" --canvas "$CANVAS" --margin "$MARGIN" --radius "$RADIUS_FRAC"
+fi
 
 # 2. 生成标准 10 档 iconset
 #
