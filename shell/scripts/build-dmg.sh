@@ -41,9 +41,17 @@ hdiutil create -volname "$VOL_NAME" -srcfolder "$STAGE" \
 	-fs HFS+ -fsargs "-c c=64,a=16,e=16" \
 	-format UDZO -ov "$OUT_DMG" >/dev/null
 
-codesign --verify --deep --strict "$APP_PATH" \
-	&& echo "    签名校验: 通过" \
-	|| echo "    签名校验: 失败（dmg 仍可分发，但公证会拒）"
+if sig_out=$(codesign --verify --deep --strict "$APP_PATH" 2>&1); then
+	echo "    签名校验: 通过"
+else
+	echo "    签名校验: 失败（dmg 仍可分发，但公证会拒）"
+	# 失败原因必须打出来，否则日志里只有「失败」两个字，无从排查。
+	printf '      %s\n' "$sig_out" | head -5
+	# 已知一类：venv 里的绝对符号链接（bin/python3 -> /绝对路径/基础解释器）
+	# 会报「invalid destination for symbolic link in bundle」。
+	# 这是硬约束：codesign 不允许 bundle 内有指向外部路径的符号链接，
+	# 所以只要用 venv，这个签名就永远是无效的 —— 不是调参能解决的。
+fi
 
 echo
 echo "==> 完成: $OUT_DMG ($(du -h "$OUT_DMG" | cut -f1))"

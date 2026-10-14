@@ -145,7 +145,7 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item 'shell\out\shell.exe' $stage
           Copy-Item 'shell\runtime' (Join-Path $stage 'runtime') -Recurse
-          $version = ${{ steps.meta.outputs.version }}
+          $version = "${{ steps.meta.outputs.version }}"
           $zip = Join-Path $root "release\${env:PRODUCT}-${version}-windows-x64.zip"
           & 7z a -tzip $zip "$stage\*" | Select-Object -Last 3
 
