@@ -292,3 +292,71 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
 - **链接警告无法消除**。设 `MACOSX_DEPLOYMENT_TARGET=15.0` 和
   `CGO_CFLAGS=-mmacosx-version-min=15.0` 都无效，`LC_BUILD_VERSION.minos`
   仍是 11.0。原因见上方"链接警告"一节。
+
+## 托盘与关窗语义（实测）
+
+实测日期：2026-10-14，macOS 15.8.1 / arm64 / Go 1.25.12 / Wails v3.0.0-beta.28
+
+> ⚠️ **本轮跑的是工作区代码，不是提交态。** `.app` 的启动日志里
+> `vcs.revision=474153c` 但 `vcs.modified=true`——`tray.go` 和 `main.go` 里的
+> 托盘改动当时还没提交就编进去了。复现这个结果需要先 `git stash list` 看清楚。
+
+### 已通过
+
+| 项 | 证据 |
+| --- | --- |
+| 图标 template 合规 | `tray_template.png` 44×44，**唯一 RGB 值 = (0,0,0)**，非纯黑像素 0 个。纯黑+alpha 是 template 的硬要求，否则深浅色菜单栏反色会出问题。截图确认深色菜单栏下「闲」字形正确反白 |
+| 隐藏到后台 | Cmd+W → `shell.log` 出现 `窗口关闭 → 隐藏到后台` + `Window hiding`，AX 窗口数 `1 → 0`。连按两次幂等 |
+| 托盘唤回 | 点托盘 → AX 窗口数 `0 → 1`，**同一个窗口对象**，没重跑加载页的 `/health` 轮询。SPA 登录态/筛选/展开面板全保留 |
+| 后端存活 | 隐藏/唤回全程 `python Start.py` 不退出，消息监听不打断 |
+| 干净退出 | 走「退出」路径时依次 `后端进程退出 err="signal: terminated"` → `后端进程已停止`。无孤儿进程、端口已释放、`DiagnosticReports` 无 crash |
+
+图标内容包围盒 x[4,39] y[3,41]，宽度占画布 81.8%、**高度 88.6%**。菜单栏图标
+惯例是 70–80%，88% 贴得太紧。次要视觉问题，`static/tray.svg` 里
+`font-size="20.5"` 调小一点即可。
+
+### 托盘菜单（人工点，已验证）
+
+| 项 | 结果 |
+| --- | --- |
+| 右键弹菜单 | ✅ 三项都在：显示窗口 / ─ / 打开数据目录 / 退出 |
+| 左键 | ✅ 唤回窗口，不弹菜单 |
+| 关窗后再唤回 | ✅ 登录页 / 筛选状态保留 |
+| 打开数据目录 | ✅ Finder 跳到 `~/Library/Application Support/xianyu-super-butler/` |
+| 点「退出」 | ✅ `后端进程退出 err="signal: terminated"` → `后端进程已停止`。无孤儿进程、端口已释放、无 crash |
+| 图标观感 | ✅ 高度占画布 88.6% 略高于菜单栏惯例的 70–80%，实机看可接受，暂不改 |
+
+**上一轮用命令行测出的「菜单弹不出来」是测试手段的问题，不是产品 bug。**
+合成右键事件不可靠：Wails beta.28 的 `systemtray_darwin.h` 里就有一个
+`systemTrayCoerceEventType(rawEventType, pressedMouseButtons)`，注释写着
+`See #5752 rationale`——Wails 自己对 status item 的右键识别就补过一个 hack。
+
+**以后别用 CGEvent 合成点击去验证托盘**，直接用真鼠标。
+
+**取舍：为什么不 attach window。** 官方 `examples/systray-menu` 用的是
+`systemTray.AttachWindow(window)` + `SetMenu(...)`，这里故意不用 `AttachWindow`、
+改成手动 `OnClick → showWindow`。查了 beta.28 源码，`applySmartDefaults()` 只赋
+`ToggleWindow` 和 `ShowMenu`，**没有任何平台有"失焦自动隐藏"**（`justClosed` 那处
+判断只包在 `if runtime.GOOS == "windows"` 里）——所以之前注释里写的理由是错的，
+真正的理由只是语义明确：这个 App 点击永远只唤回，`ToggleWindow` 的"再点一次隐藏"
+不是想要的行为（用户点错一下就看不见窗口了）。
+
+### 读源码时发现的三件事
+
+1. **`openMenu()` 失败是静默的**：
+   ```go
+   func (s *macosSystemTray) openMenu() {
+       if s.nsMenu == nil { return }   // 不报错、不打日志
+       C.showMenu(s.nsStatusItem, s.nsMenu)
+   }
+   ```
+2. **菜单创建时机脆弱**：`Menu.Update()` 在 `app.running == false` 时直接 return、
+   不建 impl。而 `setupTray()` 是在 `app.Run()` **之前**调的（`runOrDeferToAppRun`
+   会延迟创建），所以 tray 的 impl 一开始是 nil、`SetMenu` 只把值存进 Go 结构体。
+   菜单全靠 `macosSystemTray.run()` 里那句回放建立起来。整条链路任何一环断掉，
+   表现就是「菜单静默消失」——**没有日志可查**，只能靠人工点。
+3. **`tray_color.png` 不在 macOS 二进制里**：字节匹配 0 次，被 linker 当死代码消掉
+   了（`runtime.GOOS == "darwin"` 编译期常量折枝）。功能上没问题（macOS 走 template），
+   但**这个分支是零验证的死代码**，跟「已知限制」#1 的 Windows 未验证是同一件事。
+   别拿 macOS 产物去判断非 darwin 路径的对错。
+
