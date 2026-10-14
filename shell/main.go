@@ -19,12 +19,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 const (
@@ -89,6 +91,15 @@ func main() {
 	app := application.New(application.Options{
 		Name:   appName,
 		Logger: logger,
+		Mac: application.MacOptions{
+			// 显式写出（这也是 Wails mac 的默认值）：最后一个窗口关闭后 app 不退出。
+			// 关窗语义是"隐藏到后台继续监听"，退出只能走托盘菜单的「退出」。
+			// 关掉这行 app 会随窗口一起退，Dock 图标就点不回来了。
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
+		},
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
 		// 后端就绪后 OnShutdown 由 Wails 调用，负责把 Python 进程树收干净。
 		OnShutdown: func() {
 			st.stop()
@@ -96,7 +107,7 @@ func main() {
 		},
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     appName,
 		Width:     1440,
 		Height:    900,
@@ -104,6 +115,30 @@ func main() {
 		MinHeight: 720,
 		HTML:      loadingHTML(e, st.fatal),
 	})
+
+	// 红叉 = 隐藏到后台，不销毁窗口。
+	//
+	// 必须用 RegisterHook 而不是 OnWindowEvent：派发时 hook 是同步回调并检查
+	// IsCancelled()，listener 是丢进 goroutine 异步跑的，异步那个取消不掉关闭。
+	// 用隐藏而不是取消即销毁：窗口对象存活，SPA 登录态/筛选/已展开面板全保留，
+	// 唤回是瞬时的，不用重新跑加载页轮询。
+	window.RegisterHook(events.Common.WindowClosing, func(ev *application.WindowEvent) {
+		logger.Info("窗口关闭 → 隐藏到后台（后端继续运行）")
+		window.Hide()
+		ev.Cancel()
+	})
+
+	// 点 Dock 图标唤回窗口。
+	//
+	// 不注册这个就是原 bug 的直接原因：Wails 的 applicationShouldHandleReopen:
+	// 里 hasListeners 为假，事件根本不派发，点了没有任何反应。
+	if runtime.GOOS == "darwin" {
+		app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) {
+			showWindow(window)
+		})
+	}
+
+	setupTray(app, window, e.dataDir)
 
 	if st.fatal == "" {
 		go startBackend(st, logger)
