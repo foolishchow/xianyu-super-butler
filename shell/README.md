@@ -11,6 +11,24 @@ runtime/                 ← 仓库 Python 部分（Start.py / global_config.yml
 ~/Library/Application Support/xianyu-super-butler/   ← 数据库 / 日志 / 上传
 ```
 
+## 平台范围
+
+**只做 macOS 和 Windows，不做 Linux 桌面版。**
+
+Linux 从「待验证」降级为「不投入」，不是被搁置的技术难点——Web 版（`python Start.py`
+或 Docker）在任何 Linux 机器上都照常可用，桌面壳只是给不愿开浏览器的用户多一个
+选择。理由：
+
+- WebKitGTK 的跨 origin 导航限制较严，本壳的加载页 → 后端跳转依赖这个能力，
+  Linux 上的行为无法预判，等于多一条要长期跟的验证/维护线。
+- Wails v3 的 WebKitGTK 支持仍在 beta，Linux 上要自己跟上游修 bug。
+- 现有用户主体是 macOS / Windows 的自部署场景（Docker + 网页），Linux 桌面版的
+  需求没有量。
+
+所以 Linux 不纳入待办，也不做 `GOOS=linux` 的构建产物。代码里的 `proc_unix.go`
+（`!windows` 约束）和托盘的非 darwin 分支仍然保留——它们对 macOS 同样是生效路径，
+删掉反而要重构构建标签。
+
 ## 为什么选 Wails v3，不选 v2
 
 这是本目录存在的前提，先说清楚。
@@ -41,8 +59,42 @@ if userURL != "" {
 ⚠️ **v3 仍是 beta**。官方 FAQ 的表述是 "beta software with a stable desktop API"。
 本壳代码量很小、不需要频繁升级，用 beta.28 可以接受——**但 `go.mod` 必须锁死版本**。
 
+⏳ **待办**：`go.mod` 还在 `beta.28`，最新是 `beta.29`（2026-10-13 发布）。是 nightly
+自动发布、间隔仅 8 天，风险低但不是零。建议等托盘那批改动落地、bisect 基线干净之后再升，
+单独一个 commit，不要和功能性改动混在一起。
+
 > 实测结论（macOS 15.8.1 / WKWebView）：从 Wails `HTML` origin 跳转到
-> `http://127.0.0.1:<随机端口>` 的跨 origin 导航**通过**。Linux WebKitGTK 尚未验证。
+> `http://127.0.0.1:<随机端口>` 的跨 origin 导航**通过**。Linux WebKitGTK
+> 已明确不投入（见「平台范围」），不是待办项。
+
+### 为什么不迁到 Tauri
+
+结论：**继续用 Wails，不迁。** 决定因素不是「哪个框架更强」，是「要不要给桌面壳
+做正式发布」。
+
+Tauri v2 在两点上确实更好：
+
+- **稳定性**。Wails v3 至今仍是 beta（`beta.29` 于 2026-10-13 发布），而 `WebviewWindowOptions.URL`
+  这个本壳赖以成立的能力在稳定版 v2 里**根本不存在**——等于把发布基线绑死在一个未转正的分支上。
+  Tauri 的 `WebviewUrl::External(Url)` 从 2.0 起就是稳定枚举变体，已经走了两年半。
+- **发布工程**。Tauri 的 bundler 原生支持 `bundle.macOS.signingIdentity` + 公证，
+  能替换掉本目录手写的 `build-macos.sh` 和 ad-hoc 签名（见「已知限制」#7）。
+
+但没选它，因为：
+
+1. **sidecar 是为 PyInstaller 单文件二进制设计的**（`binaries/<name>-<target-triple>` 命名），
+   而本壳嵌的是**完整 venv 目录树 + Playwright Chromium**。要把 venv 的 python 按 target
+   triple 伪装成 sidecar，`PLAYWRIGHT_BROWSERS_PATH` 在 `.app` 内能否正确解析得重新验证，
+   457MB 目录树走 `bundle.resources` 官方文档也没有示例。**风险恰恰落在文档覆盖最薄的地方。**
+2. 迁过去，macOS 十项实机验证（bundle 布局、内嵌 venv、端口注入、`cmd.Dir`、真实后端
+   全 200、进程树清理……）**每一项都要重跑**。
+3. Tauri 的常规优势在本项目上都不成立：体积（包 457MB，壳占比 <1%）、内存（两者都用
+   系统 WebView，不打包 Chromium）、跨平台（Linux 已砍，见「平台范围」）、
+   Rust 核心（业务数据走 HTTP，壳不接触数据）。
+
+**重新评估的条件**：一旦要给桌面壳做正式发布（Developer ID 签名 + 公证 + 自动更新 +
+分发 dmg），就重新拿 Tauri 的 bundler 对比一次。在那之前 Wails beta 基线是可接受的
+已知约束。
 
 ## 启动流程
 
@@ -90,10 +142,9 @@ go build -o out/shell .
 
 # Windows
 GOOS=windows GOARCH=amd64 go build -o out/shell.exe .
-
-# Linux
-GOOS=linux GOARCH=amd64 go build -o out/shell .
 ```
+
+Linux 不构建，见上方「平台范围」。
 
 需要 CGO（Wails 依赖平台 WebKit/WebView2 原生库）。
 Windows 目标机需要预装 WebView2 Runtime（Win10 1803+ 通常自带）。
@@ -196,8 +247,8 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
 
 ## 已知限制
 
-1. **Windows / Linux 未验证**。跨 origin 导航在 WebKitGTK 上限制较严，Linux 是下一个
-   必测项。macOS 已全链路实机验证，见下节。
+1. **Windows 未验证**。macOS 已全链路实机验证，见下节。Linux 不是待办项，
+   见「平台范围」。
 2. **端口分配有竞态窗口**。`freePort()` 占用后立刻释放，理论上可能被别的进程抢走。
    真被抢了后端会启动失败并写进 `backend.log`，用户可据此排查。
 3. **Playwright 子进程清理依赖进程组**（Unix `Setpgid` / Windows `taskkill /T`）。
