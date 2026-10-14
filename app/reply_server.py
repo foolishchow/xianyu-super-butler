@@ -74,6 +74,33 @@ ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
+SESSION_FILE = PROJECT_ROOT / "data" / "sessions.json"
+
+def save_sessions():
+    """将会话保存到JSON文件"""
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+            json.dump(SESSION_TOKENS, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"保存会话文件失败: {e}")
+
+def load_sessions():
+    """从JSON文件加载会话"""
+    global SESSION_TOKENS
+    try:
+        if SESSION_FILE.exists():
+            with open(SESSION_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                now = time.time()
+                # 只加载未过期的token
+                SESSION_TOKENS = {k: v for k, v in data.items() if now - v.get('timestamp', 0) <= TOKEN_EXPIRE_TIME}
+                logger.info(f"从文件加载了 {len(SESSION_TOKENS)} 个会话")
+    except Exception as e:
+        logger.warning(f"加载会话文件失败: {e}")
+
+# 启动时加载会话
+load_sessions()
 
 # 认证防刷（进程内状态，重启清零，与 SESSION_TOKENS 同一取舍）
 from app.services.auth_protection import email_code_send_limiter, login_failure_tracker
@@ -245,6 +272,7 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
     # 检查token是否过期
     if time.time() - token_data['timestamp'] > TOKEN_EXPIRE_TIME:
         del SESSION_TOKENS[token]
+        save_sessions()
         return None
 
     return token_data
@@ -604,6 +632,7 @@ async def login(request: LoginRequest):
                     'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
                     'timestamp': time.time()
                 }
+                save_sessions()
 
                 # 区分管理员和普通用户的日志
                 if user['username'] == ADMIN_USERNAME:
@@ -653,6 +682,7 @@ async def login(request: LoginRequest):
                 'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
                 'timestamp': time.time()
             }
+            save_sessions()
 
             logger.info(f"【{user['username']}#{user['id']}】邮箱登录成功")
 
@@ -702,6 +732,7 @@ async def login(request: LoginRequest):
             'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
             'timestamp': time.time()
         }
+        save_sessions()
 
         logger.info(f"【{user['username']}#{user['id']}】验证码登录成功")
 
@@ -739,6 +770,7 @@ async def verify(user_info: Optional[Dict[str, Any]] = Depends(verify_token)):
 async def logout(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if credentials and credentials.credentials in SESSION_TOKENS:
         del SESSION_TOKENS[credentials.credentials]
+        save_sessions()
     return {"message": "已登出"}
 
 
@@ -6875,6 +6907,7 @@ def _revoke_user_tokens(user_id: int) -> int:
     revoked = [token for token, data in SESSION_TOKENS.items() if data.get('user_id') == user_id]
     for token in revoked:
         SESSION_TOKENS.pop(token, None)
+    save_sessions()
     return len(revoked)
 
 
