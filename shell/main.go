@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,7 +27,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
-
 const (
 	appName      = "闲鱼智控"
 	dataDirName  = "xianyu-super-butler"
@@ -92,9 +90,16 @@ func main() {
 		Name:   appName,
 		Logger: logger,
 		Mac: application.MacOptions{
+			// 启动时 Regular（有 Dock 图标）。红叉隐藏时切 Accessory（见下方
+			// WindowClosing hook），托盘唤回时切回 Regular（见 tray.go 的
+			// showWindow）。动态切换的实现见 activation_darwin.go。
+			//
+			// 这个 App 的形态是"后台盯单工具 + 配置界面"：窗口可见时 Dock 图标
+			// 可见，用户能在 Dock 找到；窗口隐藏时不占 Dock 位，菜单栏托盘是唯一
+			// 入口。
+			ActivationPolicy: application.ActivationPolicyRegular,
 			// 显式写出（这也是 Wails mac 的默认值）：最后一个窗口关闭后 app 不退出。
 			// 关窗语义是"隐藏到后台继续监听"，退出只能走托盘菜单的「退出」。
-			// 关掉这行 app 会随窗口一起退，Dock 图标就点不回来了。
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 		Windows: application.WindowsOptions{
@@ -124,19 +129,14 @@ func main() {
 	// 唤回是瞬时的，不用重新跑加载页轮询。
 	window.RegisterHook(events.Common.WindowClosing, func(ev *application.WindowEvent) {
 		logger.Info("窗口关闭 → 隐藏到后台（后端继续运行）")
+		setActivationPolicy(false) // 切 Accessory：不占 Dock 位
 		window.Hide()
 		ev.Cancel()
 	})
 
-	// 点 Dock 图标唤回窗口。
-	//
-	// 不注册这个就是原 bug 的直接原因：Wails 的 applicationShouldHandleReopen:
-	// 里 hasListeners 为假，事件根本不派发，点了没有任何反应。
-	if runtime.GOOS == "darwin" {
-		app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) {
-			showWindow(window)
-		})
-	}
+	// 注：不注册 events.Mac.ApplicationShouldHandleReopen。窗口可见时是 Regular
+	// （有 Dock），点 Dock 图标只把 app 拉到前台（窗口已经在最前面了），不需要额外
+	// 处理。窗口隐藏时是 Accessory（无 Dock），唤回入口只有菜单栏托盘（见 tray.go）。
 
 	setupTray(app, window, e.dataDir)
 

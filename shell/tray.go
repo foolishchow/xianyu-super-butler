@@ -9,9 +9,12 @@
 //  2. 后端 Python 进程和它派生的 Playwright Chromium 继续跑，消息监听不打断——
 //     这正是"关掉窗口还在盯着"的意义。
 //
-// 能接住 Dock 点击的前提：Wails 在 macOS 上默认
-// ApplicationShouldTerminateAfterLastWindowClosed=false，所以最后一个窗口没了 app
-// 仍然活着、Dock 图标还在。实测 shell.log 确认红叉只隐藏窗口、不退出进程。
+// Dock 图标策略：macOS 上用动态切换（见 activation_darwin.go）。窗口可见时 Regular
+//（Dock 图标可见），窗口隐藏时 Accessory（不占 Dock 位）。启动时 Regular，红叉时
+// 切 Accessory，托盘唤回时切回 Regular。唤回入口是菜单栏托盘（见 setupTray）。
+//
+// ApplicationShouldTerminateAfterLastWindowClosed=false 仍然必要：否则最后一个窗口
+// 没了 app 会直接退，消息监听跟着断。实测 shell.log 确认红叉只隐藏窗口、不退进程。
 //
 // 实测（2026-10-14，macOS 15.8.1 / beta.28，真实 .app 包）：
 //  - 红叉隐藏 ✅ Cmd+W → shell.log "Window hiding"，AX 窗口数 1 → 0，幂等
@@ -70,9 +73,10 @@ func setupTray(app *application.App, window application.Window, dataDir string) 
 	tray.OnClick(func() { showWindow(window) })
 }
 
-// showWindow 把窗口唤回前台。Show 之后再 Focus：Show 只让窗口可见，
-// 不一定把 app 拉到前台。
+// showWindow 把窗口唤回前台。先切回 Regular 让 Dock 图标出现，再 Show 窗口，
+// 最后 Focus 把 app 拉到前台。
 func showWindow(w application.Window) {
+	setActivationPolicy(true)
 	w.Show()
 	w.Focus()
 }
