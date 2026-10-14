@@ -32,6 +32,10 @@ on:
   push:
     branches:
       - main
+      # 桌面壳的开发分支。合到 main 之后删掉这行即可。
+      # 不能等合 main 才第一次跑：workflow_dispatch 只能列出默认分支上的
+      # workflow（gh api 返回 404），而 push 事件能读任意分支上的 workflow 文件。
+      - feature/desktop
     tags:
       - 'v*'
   workflow_dispatch:
