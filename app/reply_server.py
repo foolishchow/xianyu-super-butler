@@ -775,6 +775,8 @@ async def logout(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 
 
 # 修改管理员密码接口
+# 自助改密刻意不吊销现有会话：调用方刚验证过旧密码，本就是会话持有者，
+# 踢掉等于强制全部设备重登。要强制踢会话走 /admin/users/{id}/password（管理员代重置，会吊销）。
 @app.post('/change-admin-password')
 async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict[str, Any] = Depends(verify_admin_token)):
     from app.db_manager import db_manager
@@ -804,6 +806,7 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
 
 
 # 普通用户修改密码接口
+# 与 /change-admin-password 同一取舍：自助改密不吊销会话，保持多设备登录态。
 @app.post('/change-password')
 async def change_user_password(request: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     from app.db_manager import db_manager
