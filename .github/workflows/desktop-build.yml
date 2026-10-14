@@ -1,0 +1,154 @@
+# 桌面壳打包：macOS (.dmg) + Windows (.zip)
+#
+# 为什么需要这个：
+#   本地 build-macos.sh 只能在你那台机器出包，而且 Windows 从来没编译验证过
+#   （shell/README.md 已知限制第 1 条）。runtime/ 里的 venv 和 Playwright
+#   浏览器都是平台相关的，两个平台必须各自原生构建 —— Wails 走 CGO，依赖
+#   WebKit / WebView2 原生库，Linux 交叉编译到 Windows 走不通。
+#
+# 产物（各约 1GB，大头是 runtime/playwright 里的 534MB Chromium）：
+#   xianyu-super-butler-<version>-macos-arm64.dmg
+#   xianyu-super-butler-<version>-windows-x64.zip
+#
+# ⚠️ GitHub Actions 单次 workflow 的 artifact 上传总量默认上限 2GB，
+#   两个平台加起来贴着这条线。仓库设置 → Actions → General → Artifact size
+#   limit 建议提到 5GB，否则偶发上传失败。
+#
+# 签名（当前未做）：
+#   macOS 用 build-macos.sh 自带的 ad-hoc 签名，Windows 完全没签。
+#   拿到 Developer ID 后，把 build-macos.sh 里的
+#   `codesign --force --deep --sign -` 换成
+#   `wails3 sign --input ... --identity "Developer ID Application: ..." \
+#       --entitlements ... --hardened-runtime`，
+#   再对 dmg 跑 notarytool 公证。详见 shell/README.md 已知限制第 7 条。
+#
+# ⚠️ 已知问题：build-runtime.sh 打出来的 venv 不可迁移（pyvenv.cfg 的 home=
+#   指向构建机器的 Python 路径）。签名解决的是「能不能分发」，这个解决的是
+#   「分发出去能不能跑」，两件事都还没做完。
+
+name: Build desktop shell
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  PRODUCT: xianyu-super-butler
+  # 跟 Dockerfile 的 python:3.11-slim 对齐
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 1.25 解析到最新的 1.25.x，满足 go.mod 的 `go 1.25.12`
+          go-version: '1.25'
+          cache-dependency-path: shell/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - id: meta
+        name: 解析版本号
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 拼装 runtime/（venv + 后端源码 + Playwright）
+        shell: bash
+        run: bash shell/scripts/build-runtime.sh
+
+      - name: 构建 .app
+        shell: bash
+        run: bash shell/scripts/build-macos.sh shell/runtime
+
+      - name: 打 dmg
+        shell: bash
+        run: |
+          bash shell/scripts/build-dmg.sh \
+            "$(pwd)/shell/out/闲鱼智控.app" \
+            "$(pwd)/release/${{ env.PRODUCT }}-${{ steps.meta.outputs.version }}-macos-arm64.dmg"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-macos-arm64
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: shell/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - id: meta
+        name: 解析版本号
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 拼装 runtime/（venv + 后端源码 + Playwright）
+        shell: bash
+        run: bash shell/scripts/build-runtime.sh
+
+      # Windows 用 Go 原生构建，不需要交叉编译。
+      # 目标机需要预装 WebView2 Runtime（Win10 1803+ 通常自带）。
+      - name: 编译 Windows 壳
+        shell: pwsh
+        run: |
+          cd shell
+          New-Item -ItemType Directory -Force out | Out-Null
+          go build -o out\shell.exe .
+          Get-ChildItem out\shell.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}}
+
+      # 7-Zip 是 Windows runner 预装的；Compress-Archive 对 ~1GB 内容容易 OOM。
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $root  = Get-Location
+          $stage = Join-Path $root 'release\staging'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item 'shell\out\shell.exe' $stage
+          Copy-Item 'shell\runtime' (Join-Path $stage 'runtime') -Recurse
+          $version = ${{ steps.meta.outputs.version }}
+          $zip = Join-Path $root "release\${env:PRODUCT}-${version}-windows-x64.zip"
+          & 7z a -tzip $zip "$stage\*" | Select-Object -Last 3
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-windows-x64
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 14
