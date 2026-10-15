@@ -8065,6 +8065,7 @@ class XianyuLive:
                 logger.info(
                     f"【{target_cookie_id}】使用Playwright Chromium: {bundled_executable}"
                 )
+                launch_options['executable_path'] = bundled_executable
             else:
                 system_browser = next(
                     (
