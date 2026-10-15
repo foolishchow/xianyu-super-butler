@@ -68,14 +68,16 @@ esac
 ASSET="cpython-${PY_VERSION}+${PY_RELEASE_TAG}-${PY_PLAT}-install_only.tar.gz"
 BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_RELEASE_TAG}"
 
-echo "==> 0/5 清理 $OUT"
+echo "==> 0/6 清理 $OUT"
 [ -d "$OUT" ] && rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "==> 1/5 拷贝后端源码"
+echo "==> 1/6 拷贝后端源码"
 # global_config.yml 必须在 runtime/ 根下（上游从工作目录读），缺了后端预检会拦下来。
 cp -R app utils static "$OUT/"
-cp Start.py global_config.yml requirements.txt "$OUT/"
+# 顶层 *.py 全拷，不枚举。枚举会漏：XianyuAutoAsync.py 就曾经漏过，
+# 在用户机器上才以 ModuleNotFoundError 暴露（reply_server.py / cookie_manager.py 都 import 它）。
+cp *.py global_config.yml requirements.txt "$OUT/"
 mkdir -p "$OUT/data" "$OUT/static/uploads"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/pystand.XXXXXX")"
@@ -83,7 +85,7 @@ trap 'rm -rf "$TMP"' EXIT
 TARBALL="$TMP/$ASSET"
 SUMS="$TMP/SHA256SUMS"
 
-echo "==> 2/5 下载 python-build-standalone $PY_VERSION ($PY_PLAT)"
+echo "==> 2/6 下载 python-build-standalone $PY_VERSION ($PY_PLAT)"
 curl -fSL --retry 3 -o "$TARBALL" "$BASE_URL/$ASSET"
 curl -fSL --retry 3 -o "$SUMS" "$BASE_URL/SHA256SUMS"
 
@@ -91,7 +93,7 @@ curl -fSL --retry 3 -o "$SUMS" "$BASE_URL/SHA256SUMS"
 tar xzf "$TARBALL" -C "$OUT"
 [ -x "$OUT/$PY_BIN" ] || { echo "解压后找不到 $OUT/$PY_BIN"; exit 1; }
 
-echo "==> 3/5 校验 sha256"
+echo "==> 3/6 校验 sha256"
 # 用刚解压的解释器自己算哈希，两个平台一条代码路径（Git Bash 不一定带 sha256sum）。
 EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$SUMS")"
 [ -n "$EXPECTED" ] || { echo "SHA256SUMS 里找不到 $ASSET"; exit 1; }
@@ -112,14 +114,26 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 echo "    校验通过 ($EXPECTED)"
 
-echo "==> 4/5 安装后端依赖到解释器自带 site-packages"
+echo "==> 4/6 安装后端依赖到解释器自带 site-packages"
 # 不用 venv、不用 --target：直接装进解释器自己的 site-packages，
 # 运行时 Python 按正常路径找到，不需要 PYTHONPATH，后端零改动。
 "$OUT/$PY_BIN" -m pip install --quiet --upgrade pip
 "$OUT/$PY_BIN" -m pip install -r requirements.txt
 
-echo "==> 5/5 下载 Playwright 浏览器（约 534MB）"
+echo "==> 5/6 下载 Playwright 浏览器（约 534MB）"
 PLAYWRIGHT_BROWSERS_PATH="$OUT/playwright" "$OUT/$PY_BIN" -m playwright install chromium
+
+echo "==> 6/6 校验运行时可导入"
+# 这一步是防「产物缺模块」的，曾经因为漏拷 XianyuAutoAsync.py 在用户机器上才炸。
+# DB_PATH 重定向到 $OUT 之外，避免自检建的空库被打进产物。
+# 四个模块覆盖：应用入口 / 消息监听核心 / Cookie 管理 / API 路由。
+DB_PATH="$TMP/importcheck.db" "$OUT/$PY_BIN" -c "
+import importlib
+for m in ('XianyuAutoAsync', 'Start', 'app.cookie_manager', 'app.reply_server'):
+    importlib.import_module(m)
+print('    四个关键模块导入通过')
+"
+rm -f "$TMP/importcheck.db"
 
 echo
 echo "==> 完成: $OUT ($(du -sh "$OUT" 2>/dev/null | cut -f1))"
