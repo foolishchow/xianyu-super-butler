@@ -26,6 +26,14 @@ def die(msg):
 
 
 def main(path):
+    # Windows 控制台默认 cp1252，中文直接 print 会 UnicodeEncodeError。
+    # GitHub Actions 也没设 PYTHONIOENCODING，所以自己兜。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     data = open(path, "rb").read()
     if data[:2] != b"MZ":
         die("不是 PE 文件（DOS 头不是 MZ）")
