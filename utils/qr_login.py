@@ -630,6 +630,7 @@ class QRLoginManager:
             browser = await playwright.chromium.launch(
                 # 有 Xvfb 时用有头模式，降低被识别为自动化的概率
                 headless=not os.getenv('DISPLAY'),
+                channel='chromium',
                 args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--lang=zh-CN'],
             )
             context = await browser.new_context(

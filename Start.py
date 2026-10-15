@@ -257,7 +257,7 @@ def _check_and_install_playwright():
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 try:
-                    browser = p.chromium.launch(headless=True)
+                    browser = p.chromium.launch(headless=True, channel='chromium')
                     browser.close()
                     print(f"{_OK} Playwright浏览器已安装（通过API检测）")
                     playwright_installed = True
@@ -482,7 +482,7 @@ def _verify_browser_launchable():
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, channel='chromium')
             browser.close()
         print(f"{_OK} 浏览器自检通过，滑块验证与扫码登录可用")
         return True
