@@ -8,6 +8,7 @@
 #
 # 产物（各约 1GB，大头是 runtime/playwright 里的 534MB Chromium）：
 #   xianyu-super-butler-<version>-macos-arm64.dmg
+#   xianyu-super-butler-<version>-macos-x64.dmg
 #   xianyu-super-butler-<version>-windows-x64.zip
 #
 # ⚠️ GitHub Actions 单次 workflow 的 artifact 上传总量默认上限 2GB，
@@ -48,7 +49,7 @@ env:
   PYTHON_VERSION: '3.11'
 
 jobs:
-  macos:
+  macos-arm64:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +95,55 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PRODUCT }}-macos-arm64
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-x64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: shell/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - id: meta
+        name: 解析版本号
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 拼装 runtime/（pystand + 后端源码 + Playwright）
+        shell: bash
+        run: bash shell/scripts/build-runtime.sh
+
+      - name: 构建 .app
+        shell: bash
+        run: bash shell/scripts/build-macos.sh shell/runtime
+
+      - name: 打 dmg
+        shell: bash
+        run: |
+          bash shell/scripts/build-dmg.sh \
+            "$(pwd)/shell/out/闲鱼智控.app" \
+            "$(pwd)/release/${{ env.PRODUCT }}-${{ steps.meta.outputs.version }}-macos-x64.dmg"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT }}-macos-x64
           path: release/*.dmg
           if-no-files-found: error
           retention-days: 14
