@@ -293,6 +293,18 @@ func startBackend(st *startState, logger *slog.Logger) {
 		logger.Info("使用内置 Playwright 浏览器", "path", pw)
 	}
 
+	// Node 运行时去重：playwright 和 patchright 打的是同一个 node（sha256 完全
+	// 相同），构建时只留一份在 runtime/node，这里指给两个包共用。_driver.py 读了
+	// PLAYWRIGHT_NODEJS_PATH 就不再找自己目录下的 node。
+	for _, c := range []string{"node.exe", "node"} {
+		n := filepath.Join(e.runtimeDir, c)
+		if fi, err := os.Stat(n); err == nil && !fi.IsDir() {
+			cmd.Env = append(cmd.Env, "PLAYWRIGHT_NODEJS_PATH="+n)
+			logger.Info("使用内置 Node 运行时", "path", n)
+			break
+		}
+	}
+
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 
 	if err := cmd.Start(); err != nil {

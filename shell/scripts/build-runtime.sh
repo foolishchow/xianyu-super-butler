@@ -12,6 +12,8 @@
 #   runtime/
 #   ├── python/            python-build-standalone（可迁移，可被 codesign 签名）
 #   ├── playwright/        Chromium（离线可用，壳通过 PLAYWRIGHT_BROWSERS_PATH 指过来）
+#   ├── node[.exe]         Node 运行时（playwright 与 patchright 共用一份，
+#   │                      壳通过 PLAYWRIGHT_NODEJS_PATH 指过来）
 #   ├── Start.py
 #   ├── global_config.yml
 #   └── app/  utils/  static/
@@ -57,10 +59,12 @@ case "$OS" in
 			*) echo "不支持的 macOS 架构: $MACH"; exit 1 ;;
 		esac
 		PY_BIN="python/bin/python"
+		NODE_EXE="node"
 		;;
 	MINGW*|MSYS*|CYGWIN*)
 		PY_PLAT="x86_64-pc-windows-msvc"
 		PY_BIN="python/python.exe"
+		NODE_EXE="node.exe"
 		;;
 	*) echo "不支持的操作系统: $OS（CI 只跑 macOS 和 Windows）"; exit 1 ;;
 esac
@@ -68,11 +72,11 @@ esac
 ASSET="cpython-${PY_VERSION}+${PY_RELEASE_TAG}-${PY_PLAT}-install_only.tar.gz"
 BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_RELEASE_TAG}"
 
-echo "==> 0/8 清理 $OUT"
+echo "==> 0/9 清理 $OUT"
 [ -d "$OUT" ] && rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "==> 1/8 拷贝后端源码"
+echo "==> 1/9 拷贝后端源码"
 # global_config.yml 必须在 runtime/ 根下（上游从工作目录读），缺了后端预检会拦下来。
 cp -R app utils static "$OUT/"
 # 顶层 *.py 全拷，不枚举。枚举会漏：XianyuAutoAsync.py 就曾经漏过，
@@ -85,7 +89,7 @@ trap 'rm -rf "$TMP"' EXIT
 TARBALL="$TMP/$ASSET"
 SUMS="$TMP/SHA256SUMS"
 
-echo "==> 2/8 下载 python-build-standalone $PY_VERSION ($PY_PLAT)"
+echo "==> 2/9 下载 python-build-standalone $PY_VERSION ($PY_PLAT)"
 curl -fSL --retry 3 -o "$TARBALL" "$BASE_URL/$ASSET"
 curl -fSL --retry 3 -o "$SUMS" "$BASE_URL/SHA256SUMS"
 
@@ -93,7 +97,7 @@ curl -fSL --retry 3 -o "$SUMS" "$BASE_URL/SHA256SUMS"
 tar xzf "$TARBALL" -C "$OUT"
 [ -x "$OUT/$PY_BIN" ] || { echo "解压后找不到 $OUT/$PY_BIN"; exit 1; }
 
-echo "==> 3/8 校验 sha256"
+echo "==> 3/9 校验 sha256"
 # 用刚解压的解释器自己算哈希，两个平台一条代码路径（Git Bash 不一定带 sha256sum）。
 EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$SUMS")"
 [ -n "$EXPECTED" ] || { echo "SHA256SUMS 里找不到 $ASSET"; exit 1; }
@@ -114,19 +118,32 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 echo "    校验通过 ($EXPECTED)"
 
-echo "==> 4/8 安装后端依赖到解释器自带 site-packages"
+echo "==> 4/9 安装后端依赖到解释器自带 site-packages"
 # 不用 venv、不用 --target：直接装进解释器自己的 site-packages，
 # 运行时 Python 按正常路径找到，不需要 PYTHONPATH，后端零改动。
 "$OUT/$PY_BIN" -m pip install --quiet --upgrade pip
 "$OUT/$PY_BIN" -m pip install -r requirements.txt
 
-echo "==> 5/8 下载 Playwright 浏览器（约 413MB）"
+echo "==> 5/9 下载 Playwright 浏览器（约 413MB）"
 # --no-shell 必须加。新版 playwright 会额外下载 chromium_headless_shell（约 267MB），
 # 但 XianyuAutoAsync.py:3536 写死了 channel: 'chromium' 强制用完整版，
 # 那个 headless shell 会被打包进去却永远用不到 —— 纯死重。
 PLAYWRIGHT_BROWSERS_PATH="$OUT/playwright" "$OUT/$PY_BIN" -m playwright install chromium --no-shell
 
-echo "==> 6/8 校验运行时可导入"
+echo "==> 6/9 Node 运行时去重（playwright 与 patchright 共用一份）"
+# 两个包打的是同一个 node（v24.15.0，sha256 3331e1ff...，完全相同），
+# 各自打包了一份副本，省 87MB（Windows）/ 113MB（macOS）。
+# 隔离环境实测三种形态：patchright 用自带 node ✅、用 playwright node ✅、
+# 删自带 node 只靠 PLAYWRIGHT_NODEJS_PATH ✅，navigator.webdriver 全程 false。
+# 必须放在第 5 步之后：playwright install 要用 playwright 自己的 node 下载 chromium。
+SITE="$("$OUT/$PY_BIN" -c 'import site; print(site.getsitepackages()[0])')"
+BEFORE="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
+mv "$SITE/playwright/driver/$NODE_EXE" "$OUT/$NODE_EXE"
+rm -f "$SITE/patchright/driver/$NODE_EXE"
+AFTER="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
+echo "    省一份 $NODE_EXE：$BEFORE → $AFTER"
+
+echo "==> 7/9 校验运行时可导入"
 # 这一步是防「产物缺模块」的，曾经因为漏拷 XianyuAutoAsync.py 在用户机器上才炸。
 # DB_PATH 重定向到 $OUT 之外，避免自检建的空库被打进产物。
 # 四个模块覆盖：应用入口 / 消息监听核心 / Cookie 管理 / API 路由。
@@ -138,7 +155,7 @@ print('    四个关键模块导入通过')
 "
 rm -f "$TMP/importcheck.db"
 
-echo "==> 7/8 清理死重（测试套件 + 字节码缓存）"
+echo "==> 8/9 清理死重（测试套件 + 字节码缓存）"
 # 必须放在第 6 步之后：自检的 import 会重新生成 __pycache__，先删就是白删。
 # tests/ 是部分包的 wheel 带进来的测试套件（certifi / numpy / greenlet ...），
 # 运行时用不到。两者都不影响功能：__pycache__ 首次运行会自动重建，
@@ -149,7 +166,7 @@ find "$OUT/python" -type d -name __pycache__ -prune -exec rm -rf {} +
 AFTER="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
 echo "    清理 $OUT/python 下的 tests/ 与 __pycache__/：$BEFORE → $AFTER"
 
-echo "==> 8/8 裁掉 Chromium 多余语言包"
+echo "==> 9/9 裁掉 Chromium 多余语言包"
 # locales 是 Chrome 自身 UI 的文案（错误页、右键菜单、DevTools 这些），
 # 不是网页文案——网页语言由网站按 Accept-Language 自己返回。我们是 headless
 # 跑中文业务页，只留中文和英文回退。缺 locale 时 Chrome 回退英文，不会崩。
