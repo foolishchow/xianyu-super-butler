@@ -22,9 +22,11 @@
 #       --entitlements ... --hardened-runtime`，
 #   再对 dmg 跑 notarytool 公证。详见 shell/README.md 已知限制第 7 条。
 #
-# ⚠️ 已知问题：build-runtime.sh 打出来的 venv 不可迁移（pyvenv.cfg 的 home=
-#   指向构建机器的 Python 路径）。签名解决的是「能不能分发」，这个解决的是
-#   「分发出去能不能跑」，两件事都还没做完。
+# venv 的坑已解决：build-runtime.sh 改用 python-build-standalone。
+#   venv 的绝对符号链接（bin/python3 -> 构建机的 Python）既让产物在别人机器上
+#   跑不起来，又让 codesign 报「invalid destination for symbolic link in bundle」
+#   —— 签名无效。换成 pystand 后两个问题一起消失（本地产物实测
+#   codesign --verify --deep --strict 通过，0 个绝对符号链接）。
 
 name: Build desktop shell
 

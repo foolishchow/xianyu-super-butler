@@ -1,12 +1,20 @@
 #!/bin/bash
-# 拼装分发的 runtime/ 目录：Python venv + 后端源码 + Playwright 浏览器。
+# 拼装分发的 runtime/ 目录：python-build-standalone + 后端源码 + Playwright 浏览器。
 #
 # 用法:
 #   bash shell/scripts/build-runtime.sh                    # 输出到 shell/runtime
 #   bash shell/scripts/build-runtime.sh path/to/output     # 指定输出目录
 #
-# 必须在目标平台本地执行。venv 的目录布局（bin/ vs Scripts/）和 Playwright
-# 浏览器都是平台相关的，macOS 的 runtime/ 不能塞进 Windows 包，反之亦然。
+# 必须在目标平台本地执行。Python 解释器和 Playwright 浏览器都是平台相关的，
+# macOS 的 runtime/ 不能塞进 Windows 包，反之亦然。
+#
+# 产物布局:
+#   runtime/
+#   ├── python/            python-build-standalone（可迁移，可被 codesign 签名）
+#   ├── playwright/        Chromium（离线可用，壳通过 PLAYWRIGHT_BROWSERS_PATH 指过来）
+#   ├── Start.py
+#   ├── global_config.yml
+#   └── app/  utils/  static/
 #
 # ⚠️ 输出路径只接受仓库根下的相对路径。Windows Git Bash 把绝对路径给成
 #   POSIX 形态（/c/Users/...），Python 看不懂；用相对路径则 Python 和 bash
@@ -14,6 +22,20 @@
 #
 # 前端不需要在这里构建：static/ 里的构建产物是入库的（见 .gitattributes 的
 # linguist-vendored 注释），所以 CI 不用装 Node 工具链。
+
+# ============================================================================
+# 升级 Python 版本时改这里。
+#
+# 为什么写死而不是拉 latest：这是打进发布产物的第三方解释器，
+# 构建必须可复现。Playwright 1.60.0 的 wheel 与 Python 版本有兼容性边界，
+# 换版本要重新验证一遍。
+#
+# 资产命名规则：cpython-<PY_VERSION>+<PY_RELEASE_TAG>-<平台>-install_only.tar.gz
+# install_only 变体 = 开箱即用、自带全部动态库、不含开发工具。
+# ============================================================================
+PY_RELEASE_TAG="${PY_RELEASE_TAG:-20261013}"
+PY_VERSION="${PY_VERSION:-3.11.17}"
+
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -24,55 +46,93 @@ case "$OUT" in
 	/*) echo "输出路径必须是仓库根下的相对路径（收到: $OUT）"; exit 1 ;;
 esac
 
-if [ -d "$OUT" ]; then
-	echo "==> 0/4 清理 $OUT"
-	rm -rf "$OUT"
-fi
+# --- 平台 → python-build-standalone 平台串 ---
+OS="$(uname -s)"
+MACH="$(uname -m)"
+case "$OS" in
+	Darwin)
+		case "$MACH" in
+			arm64)  PY_PLAT="aarch64-apple-darwin" ;;
+			x86_64) PY_PLAT="x86_64-apple-darwin" ;;
+			*) echo "不支持的 macOS 架构: $MACH"; exit 1 ;;
+		esac
+		PY_BIN="python/bin/python"
+		;;
+	MINGW*|MSYS*|CYGWIN*)
+		PY_PLAT="x86_64-pc-windows-msvc"
+		PY_BIN="python/python.exe"
+		;;
+	*) echo "不支持的操作系统: $OS（CI 只跑 macOS 和 Windows）"; exit 1 ;;
+esac
+
+ASSET="cpython-${PY_VERSION}+${PY_RELEASE_TAG}-${PY_PLAT}-install_only.tar.gz"
+BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_RELEASE_TAG}"
+
+echo "==> 0/5 清理 $OUT"
+[ -d "$OUT" ] && rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "==> 1/4 拷贝后端源码"
-# 只拷运行需要的。global_config.yml 必须在 runtime/ 根下（上游从工作目录读），
-# 缺了后端预检会拦下来。
+echo "==> 1/5 拷贝后端源码"
+# global_config.yml 必须在 runtime/ 根下（上游从工作目录读），缺了后端预检会拦下来。
 cp -R app utils static "$OUT/"
 cp Start.py global_config.yml requirements.txt "$OUT/"
-# uploads 是运行期写入的图片目录，git 里是空的
 mkdir -p "$OUT/data" "$OUT/static/uploads"
 
-echo "==> 2/4 创建 Python venv"
-# Windows 上没有 python3 这个命令名
-if command -v python3 >/dev/null 2>&1; then
-	PY=python3
-else
-	PY=python
-fi
-"$PY" -m venv "$OUT"
-if [ -x "$OUT/Scripts/python.exe" ]; then
-	VENV_PY="$OUT/Scripts/python.exe"
-else
-	VENV_PY="$OUT/bin/python"
-fi
-echo "    解释器: $("$VENV_PY" --version)  ($VENV_PY)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/pystand.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+TARBALL="$TMP/$ASSET"
+SUMS="$TMP/SHA256SUMS"
 
-echo "==> 3/4 安装依赖"
-"$VENV_PY" -m pip install --quiet --upgrade pip
-"$VENV_PY" -m pip install -r requirements.txt
+echo "==> 2/5 下载 python-build-standalone $PY_VERSION ($PY_PLAT)"
+curl -fSL --retry 3 -o "$TARBALL" "$BASE_URL/$ASSET"
+curl -fSL --retry 3 -o "$SUMS" "$BASE_URL/SHA256SUMS"
 
-echo "==> 4/4 下载 Playwright 浏览器（约 534MB）"
-# 装进 bundle 内部，壳会通过 PLAYWRIGHT_BROWSERS_PATH 指过去，避免用户首启联网。
-PLAYWRIGHT_BROWSERS_PATH="$OUT/playwright" "$VENV_PY" -m playwright install chromium
+# 解压后顶层就是 python/，落在 $OUT/python/
+tar xzf "$TARBALL" -C "$OUT"
+[ -x "$OUT/$PY_BIN" ] || { echo "解压后找不到 $OUT/$PY_BIN"; exit 1; }
+
+echo "==> 3/5 校验 sha256"
+# 用刚解压的解释器自己算哈希，两个平台一条代码路径（Git Bash 不一定带 sha256sum）。
+EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$SUMS")"
+[ -n "$EXPECTED" ] || { echo "SHA256SUMS 里找不到 $ASSET"; exit 1; }
+ACTUAL="$($OUT/$PY_BIN - "$TARBALL" <<'PY'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+	for chunk in iter(lambda: f.read(1 << 20), b""):
+		h.update(chunk)
+print(h.hexdigest())
+PY
+)"
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+	echo "sha256 不匹配"
+	echo "  期望: $EXPECTED"
+	echo "  实际: $ACTUAL"
+	exit 1
+fi
+echo "    校验通过 ($EXPECTED)"
+
+echo "==> 4/5 安装后端依赖到解释器自带 site-packages"
+# 不用 venv、不用 --target：直接装进解释器自己的 site-packages，
+# 运行时 Python 按正常路径找到，不需要 PYTHONPATH，后端零改动。
+"$OUT/$PY_BIN" -m pip install --quiet --upgrade pip
+"$OUT/$PY_BIN" -m pip install -r requirements.txt
+
+echo "==> 5/5 下载 Playwright 浏览器（约 534MB）"
+PLAYWRIGHT_BROWSERS_PATH="$OUT/playwright" "$OUT/$PY_BIN" -m playwright install chromium
 
 echo
 echo "==> 完成: $OUT ($(du -sh "$OUT" 2>/dev/null | cut -f1))"
+"$OUT/$PY_BIN" --version
 
-# ⚠️ 已知问题（未修，等决策）：这个 venv 不可迁移。
-#
-# pyvenv.cfg 的 home= 写死创建 venv 时所用基础解释器的绝对路径，bundle 里的
-# bin/python 是指向它的符号链接。拷到别的机器后该路径不存在，
-# shell/main.go 的 pythonBin() 用 os.Stat 探测会失败，回退到用户系统 python3，
-# 然后因缺依赖崩掉 —— 表现是「窗口开了但后端起不来」，比直接打不开更难查。
-#
-# 真正自包含要走 python-build-standalone（不用 venv，依赖直接装进它的
-# site-packages）。在决策前，下面的输出就是 CI 日志里唯一的诊断线索：
-# 只要 home= 不落在 bundle 目录内，这份产物在别人机器上就是坏的。
-echo "⚠️  venv 可迁移性检查（home= 必须落在 bundle 内，否则别人机器上坏）:"
-grep -E '^(home|executable) =' "$OUT/pyvenv.cfg" 2>/dev/null || true
+# --- 不变量自检 ---
+# 这个脚本存在的唯一理由就是解决 venv 的两个问题：不可迁移 + 无法签名。
+# 绝对符号链接是两者的共同根因（codesign 报
+# "invalid destination for symbolic link in bundle"），所以直接查它。
+ABS_LINKS="$(find "$OUT/python" -type l -exec sh -c 'readlink "$1" | grep -q "^/" && echo X' _ {} \; 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$ABS_LINKS" != "0" ]; then
+	echo "❌ 发现 $ABS_LINKS 个指向绝对路径的符号链接，产物不可签名："
+	find "$OUT/python" -type l -exec sh -c 'readlink "$1" | grep -q "^/" && echo "   $1 -> $(readlink "$1")"' _ {} \;
+	exit 1
+fi
+echo "✅ 绝对符号链接: 0（产物可迁移、可被 codesign 签名）"

@@ -316,6 +316,11 @@ func pythonBin(runtimeDir string) string {
 		return p
 	}
 	for _, c := range []string{
+		// python-build-standalone 解压到 runtime/python/。这是分发产物的布局，
+		// 放前面。可迁移且能被 codesign 签名（venv 的绝对符号链接做不到）。
+		filepath.Join(runtimeDir, "python", "python.exe"),
+		filepath.Join(runtimeDir, "python", "bin", "python"),
+		// 兼容旧的 venv 布局（只在本机开发时用到，分发不再产生）。
 		filepath.Join(runtimeDir, "python.exe"),
 		filepath.Join(runtimeDir, "bin", "python"),
 	} {
