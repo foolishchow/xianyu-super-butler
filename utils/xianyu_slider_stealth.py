@@ -64,11 +64,15 @@ def find_chromium_executable() -> Optional[str]:
         roots.append(Path.home() / '.cache' / 'ms-playwright')      # Linux
         roots.append(Path.home() / 'Library' / 'Caches' / 'ms-playwright')  # macOS
 
-    # 只认完整版 Chromium：headless shell 缺少滑块页面需要的渲染能力
+    # 只认完整版 Chromium：headless shell 缺少滑块页面需要的渲染能力。
+    # Windows 目录名从 playwright 1.60.0 起是 chrome-win64，之前是 chrome-win，
+    # 两个都留着——原来只写了 chrome-win，在我们钉的 1.60.0 上永远返回 None，
+    # executable_path 静默没传进去，这个回退形同虚设。
     candidates = (
         'chrome-linux/chrome',
         'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
         'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        'chrome-win64/chrome.exe',
         'chrome-win/chrome.exe',
     )
     for root in roots:
