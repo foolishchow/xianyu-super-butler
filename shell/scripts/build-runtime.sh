@@ -139,14 +139,15 @@ echo "==> 6/9 Node 运行时去重（playwright 与 patchright 共用一份）"
 # 用 find 而不是 site.getsitepackages()：后者在 Windows 上返回的路径带反斜杠，
 # Git Bash 拼接正斜杠后路径解析不正确（实测 mv 找不到文件）。find 直接按文件名
 # 定位，不依赖 Python 的路径解析。
+: "${NODE_EXE:?NODE_EXE 未设置（平台 case 块可能没匹配到）}"
 PW_NODE="$(find "$OUT/python" -type f -name "$NODE_EXE" -path '*/playwright/driver/*' -print -quit 2>/dev/null)"
-[ -z "$PW_NODE" ] && { echo "    未找到 playwright $NODE_EXE，跳过"; exit 1; }
+[ -z "$PW_NODE" ] && { echo "    未找到 playwright ${NODE_EXE}，跳过"; exit 1; }
 PR_NODE="$(find "$OUT/python" -type f -name "$NODE_EXE" -path '*/patchright/driver/*' -print -quit 2>/dev/null)"
 BEFORE="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
 mv "$PW_NODE" "$OUT/$NODE_EXE"
 [ -n "$PR_NODE" ] && rm -f "$PR_NODE"
 AFTER="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
-echo "    省一份 $NODE_EXE：$BEFORE → $AFTER"
+echo "    省一份 ${NODE_EXE}：$BEFORE → $AFTER"
 
 echo "==> 7/9 校验运行时可导入"
 # 这一步是防「产物缺模块」的，曾经因为漏拷 XianyuAutoAsync.py 在用户机器上才炸。
