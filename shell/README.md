@@ -7,7 +7,7 @@ Wails v3 壳层，给闲鱼智控包一个原生窗口。
 
 ```
 shell                    ← 本程序
-runtime/                 ← 仓库 Python 部分（Start.py / global_config.yml / venv）
+runtime/                 ← 仓库 Python 部分（Start.py / global_config.yml / python-build-standalone）
 ~/Library/Application Support/xianyu-super-butler/   ← 数据库 / 日志 / 上传
 ```
 
@@ -161,7 +161,8 @@ bash shell/scripts/build-macos.sh runtime/ icon.icns  # 壳 + 后端 + 图标
 壳会按顺序探测 `<exe>/runtime` 和 `<exe>/../Resources/runtime`，所以裸二进制和
 .app 包两种布局都能跑。
 
-包内自带 venv 时，Python 路径是 `Contents/Resources/runtime/bin/python`，
+包内自带 python-build-standalone 时，Python 路径是
+`Contents/Resources/runtime/python/bin/python`，
 壳的 `pythonBin()` 会优先找到它，不依赖用户系统 Python。
 
 #### 应用图标
@@ -205,11 +206,10 @@ ld: warning: object file was built for newer 'macOS' version (15.0) than being l
 闲鱼智控.app / 闲鱼智控.exe
 ├── shell(.exe)          # 本目录构建产物
 └── runtime/
-    ├── python(.exe)     # 内嵌 venv，别依赖用户系统 Python
+    ├── python/          # python-build-standalone，自带解释器和 site-packages
     ├── Start.py
     ├── global_config.yml
     ├── app/  utils/  frontend/dist → static/ ...
-    └── site-packages/   # playwright / node 依赖
 ```
 
 `runtime/` 不在版本库里（见 `.gitignore`），是分装时拼出来的。
@@ -224,7 +224,7 @@ ld: warning: object file was built for newer 'macOS' version (15.0) than being l
   `PLAYWRIGHT_BROWSERS_PATH` 指过去（后端零改动，上游 `Start.py` 本来就认这个变量）
 
 推荐打包。注意上游对 PyInstaller 场景的约定是 `<exe>/playwright` 且仅当
-`sys.frozen` 为真时生效；我们用 venv 不是 frozen，所以走环境变量这条路。
+`sys.frozen` 为真时生效；我们内嵌的是解释器不是 frozen bundle，所以走环境变量这条路。
 
 下载命令：
 
@@ -268,13 +268,19 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
 
 环境：macOS 15.8.1 Sequoia / arm64 / Go 1.25.12 / Wails v3.0.0-beta.28
 
-以下均在真实 `.app` 包（457M，含内嵌 venv）里验证通过：
+以下均在真实 `.app` 包里验证通过（该次是 venv 布局，457M；后来迁到
+python-build-standalone，布局变为 `runtime/python/`，见下方说明）：
 
 | 项 | 结果 |
 | --- | --- |
 | 跨 origin 导航 | ✅ 加载页 → `http://127.0.0.1:<随机端口>` 成功跳转 |
 | bundle 布局 | ✅ 二进制在 `Contents/MacOS/`，壳从 `../Resources/runtime` 找到后端 |
-| 内嵌 venv | ✅ 用 `Contents/Resources/runtime/bin/python` 启动，不依赖系统 Python |
+| 内嵌 Python | ✅ 用 `Contents/Resources/runtime/python/bin/python` 启动，不依赖系统 Python |
+
+> 该表验证时是 venv 布局（`runtime/bin/python`）。后来迁到 python-build-standalone，
+> 原因：venv 的绝对符号链接（`bin/python3 -> 构建机的 Python`）让
+> `codesign --verify --deep --strict` 报 `invalid destination for symbolic link
+> in bundle`，签名永远无效；而 pystand 0 个绝对符号链接，签名校验通过。
 | 端口注入 | ✅ `API_PORT` 生效，后端只监听 `127.0.0.1` |
 | 工作目录 | ✅ `cmd.Dir` 指向 runtime，`global_config.yml` 读得到 |
 | 真实后端 | ✅ SPA / JS / CSS / `/system-settings/public` / SQLite 全部 200 |

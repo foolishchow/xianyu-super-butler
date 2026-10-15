@@ -75,7 +75,7 @@ jobs:
             echo "version=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 拼装 runtime/（venv + 后端源码 + Playwright）
+      - name: 拼装 runtime/（pystand + 后端源码 + Playwright）
         shell: bash
         run: bash shell/scripts/build-runtime.sh
 
@@ -124,7 +124,7 @@ jobs:
             echo "version=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 拼装 runtime/（venv + 后端源码 + Playwright）
+      - name: 拼装 runtime/（pystand + 后端源码 + Playwright）
         shell: bash
         run: bash shell/scripts/build-runtime.sh
 
