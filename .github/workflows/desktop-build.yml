@@ -135,7 +135,13 @@ jobs:
         run: |
           cd shell
           New-Item -ItemType Directory -Force out | Out-Null
-          go build -o out\shell.exe .
+          # -H windowsgui 切到 GUI 子系统（PE subsystem 2），否则 exe 一启动就弹黑窗口。
+          # 不加这个是完全没问题的功能，但用户看到的是「一个 cmd 界面」，不像个正式应用。
+          # 我们没有任何东西依赖控制台：openLogger() 写 shell.log，
+          # 后端 stdout/stderr 重定向到 backend.log（main.go:338 / main.go:275）。
+          # -w -s 剥符号表和 DWARF。故意不加 -buildvcs=false：
+          # 让 commit SHA 留在二进制里，用户报问题时 `go version -m shell.exe` 能看出跑的是哪一版。
+          go build -trimpath -ldflags="-w -s -H windowsgui" -o out\shell.exe .
           Get-ChildItem out\shell.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}}
 
       # 7-Zip 是 Windows runner 预装的；Compress-Archive 对 ~1GB 内容容易 OOM。
