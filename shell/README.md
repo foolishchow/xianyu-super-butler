@@ -301,9 +301,27 @@ stub 后端在 `shell/test/backend.py`，只复现 `/health` 和首页两个端�
    真被抢了后端会启动失败并写进 `backend.log`，用户可据此排查。
 3. **Playwright 子进程清理依赖进程组**（Unix `Setpgid` / Windows `taskkill /T`）。
    只杀 `Start.py` 本体会留孤儿 Chromium。
-4. **反检测回归未做**。换成"应用内嵌后端 + WebView"形态后，运行环境特征和纯服务器
-   部署不同。`utils/xianyu_slider_stealth.py` 的 UA/字体/WebGL 伪造是针对独立
-   Chromium 调的，接真实账号前滑块链路要单独回归一遍。
+4. **反检测链路：前置障碍已清除，但未被真实风控触发过**。滑块反检测
+   （`utils/xianyu_slider_stealth.py`）是被动触发的，不是用户主动点的功能——
+   只有闲鱼风控响应命中 `FAIL_SYS_USER_VALIDATE` / `RGV587_ERROR` /
+   `punish?x5secdata` 等关键词时才走（`XianyuAutoAsync.py:2299` 的
+   `_need_captcha_verification`）。
+
+   之前这条链路连触发都触发不了，是两个静默障碍挡着，现在都修了：
+
+   - `requirements.txt` 把 `patchright` 钉到 `==1.60.1`（commit `4c7c360`）。
+     开放区间 `>=1.52.0` 让 pip 拿 1.63.0，它要 chromium-1243，而产物里只有
+     playwright 1.60.0 那份 chromium-1223，patchright 启动时 `executablePathOrDie`
+     直接抛 `Executable doesn't exist`。
+   - `find_chromium_executable()` 认 `chrome-win64`（commit `5c2dc3d`）。原来只写
+     `chrome-win`，playwright 1.60.0 实际下发的是 `chrome-win64`，所以系统没装
+     Chrome 时的回退路径恒返回 None，显式复用现成 Chromium 的设计静默失效。
+
+   **注意区分「障碍清除」和「验证通过」**。这两处只让链路具备了被触发的可能，
+   没证明它真能过阿里 nc 滑块。要算通过，得等闲鱼自然风控一次，日志里出现
+   `检测到滑块验证` → `Patchright 启动成功` → `添加反检测脚本` → 最后
+   `滑块验证成功`，才有据。在那之前这条仍按未验证处理。不推荐为验证而主动
+   招惹风控——滑块万一没过，账号可能反被加重限制。
 5. **`global_config.yml` 必须在 `runtime/` 里**。上游从工作目录读这个文件，缺了直接
    读不到配置，预检会拦下来。
 6. **WebView 自己的缓存目录**（登录态、localStorage）落在 WebKit 的用户数据目录，
