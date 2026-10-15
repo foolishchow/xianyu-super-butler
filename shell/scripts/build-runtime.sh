@@ -136,10 +136,15 @@ echo "==> 6/9 Node 运行时去重（playwright 与 patchright 共用一份）"
 # 隔离环境实测三种形态：patchright 用自带 node ✅、用 playwright node ✅、
 # 删自带 node 只靠 PLAYWRIGHT_NODEJS_PATH ✅，navigator.webdriver 全程 false。
 # 必须放在第 5 步之后：playwright install 要用 playwright 自己的 node 下载 chromium。
-SITE="$("$OUT/$PY_BIN" -c 'import site; print(site.getsitepackages()[0])')"
+# 用 find 而不是 site.getsitepackages()：后者在 Windows 上返回的路径带反斜杠，
+# Git Bash 拼接正斜杠后路径解析不正确（实测 mv 找不到文件）。find 直接按文件名
+# 定位，不依赖 Python 的路径解析。
+PW_NODE="$(find "$OUT/python" -type f -name "$NODE_EXE" -path '*/playwright/driver/*' -print -quit 2>/dev/null)"
+[ -z "$PW_NODE" ] && { echo "    未找到 playwright $NODE_EXE，跳过"; exit 1; }
+PR_NODE="$(find "$OUT/python" -type f -name "$NODE_EXE" -path '*/patchright/driver/*' -print -quit 2>/dev/null)"
 BEFORE="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
-mv "$SITE/playwright/driver/$NODE_EXE" "$OUT/$NODE_EXE"
-rm -f "$SITE/patchright/driver/$NODE_EXE"
+mv "$PW_NODE" "$OUT/$NODE_EXE"
+[ -n "$PR_NODE" ] && rm -f "$PR_NODE"
 AFTER="$(du -sh "$OUT" 2>/dev/null | cut -f1)"
 echo "    省一份 $NODE_EXE：$BEFORE → $AFTER"
 
