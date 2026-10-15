@@ -144,6 +144,14 @@ jobs:
           go build -trimpath -ldflags="-w -s -H windowsgui" -o out\shell.exe .
           Get-ChildItem out\shell.exe | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}}
 
+      # 图标资源校验：没这道时 .syso 被漏提交是完全静默的 ——
+      # exe 照常编译，只是任务栏和窗口左上角退化成 Windows 通用图标。
+      # 历史上就是这个坑，现在编出来就验。校验脚本也确认 RT_GROUP_ICON
+      # 不在 Wails beta.28 写的 ID 3，所以必须靠 Options.Icon 兜任务栏。
+      - name: 校验 PE 图标资源
+        shell: bash
+        run: python shell/scripts/verify_pe_icon.py shell/out/shell.exe
+
       # 7-Zip 是 Windows runner 预装的；Compress-Archive 对 ~1GB 内容容易 OOM。
       - name: 打包 zip
         shell: pwsh

@@ -182,6 +182,54 @@ bash shell/scripts/make-icon.sh path/to/logo.svg
 `icon_64x64.png` 这类非标准条目名也不要放进来。三个工具都是 macOS 自带的，
 不用额外安装。
 
+### Windows 图标
+
+```bash
+bash shell/scripts/make-windows-icon.sh
+python shell/scripts/verify_pe_icon.py shell/out/shell.exe   # 校验
+```
+
+管线：`rsvg-convert` 把 `static/favicon.svg` 渲成 256×256 PNG → Pillow 合出
+7 档 ICO（16/24/32/48/64/128/256）→ `rsrc` 编译成 COFF `.syso`。
+
+**需要两份资产，缺一份就有半边是 Windows 通用图标。** Wails beta.28 取窗口图标
+是两段式的（`pkg/application/webview_window_windows.go:621`）：
+
+1. `LoadIcon(GetModuleHandle(""), 3)` —— 找 PE 资源段里的 RT_GROUP_ICON，**ID 写死 3**
+2. 失败才回退 `application.Options.Icon`
+
+而 `rsrc` 生成的 RT_GROUP_ICON ID 固定是 **1**（`rsrc.go` 里 `newid()` 从 0 递增），
+对不上 3。实测 `verify_pe_icon.py` 输出：
+
+```
+RT_ICON       (0x3):  资源ID ['2','3','4','5','6','7','8']
+RT_GROUP_ICON (0x14): 资源ID ['1']
+⚠️  没有 ID 3
+```
+
+所以两份资产各管一段：
+
+| 资产 | 作用范围 |
+|---|---|
+| `rsrc_windows_amd64.syso`（链接期） | 资源管理器文件图标、属性对话框 |
+| `app.ico`（`//go:embed` → `Options.Icon`） | 窗口左上角、任务栏、Alt+Tab |
+
+`rsrc` 不支持指定资源 ID，也没有公开的 `SetWindowIcon()` API
+（只有 `pkg/w32/icon.go` 里的内部实现，外部包 import 不到）。要真正的 ID 3
+只能用 windres 写 `.rc`，Windows runner 不自带 MinGW，不值得为此加依赖。
+升级 Wails 后「ID 3」这个前提要重新验。
+
+`.syso` 必须入库，否则静默退化（exe 照常编出来，只是图标不对）。
+`-windows_amd64` 后缀让 `go build` 按 GOOS_GOARCH 自动识别。
+CI 里已加校验步骤，漏了就 red。
+
+⚠️ **`import "embed"` 不生效，必须写 `_ "embed"`。** `main.go` 里用了普通的
+`import "embed"`，编译报 `"embed" imported and not used`，但 `tray.go` 同样写法
+能过。换成 `_ "embed"` 后正常。Go 1.25.12 的已知行为。
+
+`app.ico` 在 macOS 上编译也会被 embed 进去（`embed` 不分平台），
+所以 mac 产物多 18KB。可以不嵌，但那样改代码的风险比多 18KB 大。
+
 #### 链接警告（已知，无法消除）
 
 `go build` 会报 17 条：

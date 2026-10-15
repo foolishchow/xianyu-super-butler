@@ -11,6 +11,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"html"
 	"log/slog"
@@ -27,12 +28,31 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
+
 const (
 	appName      = "闲鱼智控"
 	dataDirName  = "xianyu-super-butler"
 	backendWait  = 180 * time.Second
 	pollInterval = 500 * time.Millisecond
 )
+
+// Windows 窗口左上角与任务栏图标。
+//
+// 为什么这份 ICO 既嵌进 PE 资源段、又嵌进 Go 代码？因为 Wails beta.28 取图标
+// 是两段式的（pkg/application/webview_window_windows.go:620）：
+//
+//  1. LoadIcon(GetModuleHandle(""), 3)  —— 找 PE 资源段里的 RT_GROUP_ICON，ID 写死 3
+//  2. 失败才回退这里
+//
+// 而 rsrc 生成的 RT_GROUP_ICON ID 固定是 1，对不上 3。所以两段各管各的：
+//
+//   - PE 资源段（rsrc_windows_amd64.syso）→ 资源管理器文件图标、属性对话框
+//   - 这里（Options.Icon）                → 窗口左上角、任务栏、Alt+Tab
+//
+// 少一份就有一半边是 Windows 通用默认图标。生成方式见 scripts/make-windows-icon.sh。
+//
+//go:embed app.ico
+var appIcon []byte
 
 // env 是 main() 一次性解析出来的运行环境，向下只读传递。
 type env struct {
@@ -88,6 +108,7 @@ func main() {
 
 	app := application.New(application.Options{
 		Name:   appName,
+		Icon:   appIcon,
 		Logger: logger,
 		Mac: application.MacOptions{
 			// 启动时 Regular（有 Dock 图标）。红叉隐藏时切 Accessory（见下方
